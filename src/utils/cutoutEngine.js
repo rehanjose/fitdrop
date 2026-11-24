@@ -1050,6 +1050,8 @@ export async function classifyGarmentPhotoAngle(dataUrl) {
     const lmREar = lm[8];
     const lmLS = lm[11];
     const lmRS = lm[12];
+    const lmLW = lm[15];
+    const lmRW = lm[16];
     const lmLH = lm[23];
     const lmRH = lm[24];
 
@@ -1061,7 +1063,9 @@ export async function classifyGarmentPhotoAngle(dataUrl) {
     // In image space: front-facing has RS.x < LS.x (deltaX < 0); back-facing has RS.x > LS.x (deltaX > 0)
     const deltaX = lmRS.x - lmLS.x;
     const deltaZ = (lmRS.z ?? 0) - (lmLS.z ?? 0);
-    const hipsVis = (lmLH?.visibility ?? 0) > 0.35 && (lmRH?.visibility ?? 0) > 0.35;
+    const hipsVis = (lmLH?.visibility ?? 0) > 0.4 && (lmRH?.visibility ?? 0) > 0.4;
+    const hipsInFrame = hipsVis && lmLH.y < 0.94 && lmRH.y < 0.94 && lmLH.y > 0.35;
+    const shouldersInFrame = lmLS.y > 0.05 && lmRS.y > 0.05;
     const noseVis = lmNose?.visibility ?? 0;
     const earMidZ = ((lmLEar?.z ?? 0) + (lmREar?.z ?? 0)) * 0.5;
     const noseBehind = (lmNose?.z ?? 0) > earMidZ + 0.02 && noseVis < 0.72;
@@ -1074,7 +1078,28 @@ export async function classifyGarmentPhotoAngle(dataUrl) {
 
     const absDeg = Math.abs(angleDeg);
     const shWidth = Math.abs(deltaX);
-    const baseScore = shWidth * 2.2 + (hipsVis ? 0.35 : 0);
+
+    // Penalize cropped close-ups (hips cut off or shoulders touching top border)
+    // and photos where the model's wrist/forearm crosses in front of the torso!
+    const shMinX = Math.min(lmLS.x, lmRS.x);
+    const shMaxX = Math.max(lmLS.x, lmRS.x);
+    const shMidY = (lmLS.y + lmRS.y) * 0.5;
+    const hipMidY = hipsVis ? (lmLH.y + lmRH.y) * 0.5 : shMidY + shWidth * 1.4;
+
+    const wristOverTorso = (lmW) =>
+      lmW &&
+      (lmW.visibility ?? 0) > 0.4 &&
+      lmW.x > shMinX + shWidth * 0.10 &&
+      lmW.x < shMaxX - shWidth * 0.10 &&
+      lmW.y > shMidY &&
+      lmW.y < hipMidY;
+
+    const armCrossPenalty = (wristOverTorso(lmLW) ? 1.4 : 0) + (wristOverTorso(lmRW) ? 1.4 : 0);
+    const cropPenalty = (!hipsInFrame ? 1.8 : 0) + (!shouldersInFrame ? 1.2 : 0);
+    const framingBonus = (hipsInFrame ? 1.2 : 0) + (shouldersInFrame ? 0.6 : 0);
+    // Prefer full torso framing (ideal shWidth ~0.25..0.55) over zoomed-in crops (shWidth > 0.68)
+    const idealWidthScore = Math.min(shWidth, 0.55) * 2.0 - Math.max(0, shWidth - 0.62) * 3.0;
+    const baseScore = idealWidthScore + framingBonus - cropPenalty - armCrossPenalty;
 
     if (absDeg <= 38) {
       return {

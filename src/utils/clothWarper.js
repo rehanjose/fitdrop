@@ -225,8 +225,8 @@ export function updatePersonMaskCanvas(segMask) {
       const curr = floatData[i];
       const prev = smoothMaskProb[i];
       const diff = Math.abs(curr - prev);
-      // Small edge flicker -> heavy temporal lock (0.18); real motion -> fast snap (0.68)
-      const ema = diff < 0.28 ? 0.18 : diff < 0.50 ? 0.42 : 0.72;
+      // Small edge flicker -> temporal lock (0.24); real shoulder/arm motion -> crisp fast snap (0.78)
+      const ema = diff < 0.22 ? 0.24 : diff < 0.42 ? 0.52 : 0.78;
       smoothMaskProb[i] = prev + (curr - prev) * ema;
     }
   }
@@ -438,8 +438,10 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
 
       if (sleeveMask > 0.001) {
         if (Math.abs(sleeveDelta) > 0.015) {
-          const pivotU = isLeftSide ? 0.25 : 0.75;
-          const pivotV = 0.17;
+          // Anchor pivot right at the top shoulder joint (pivotV = 0.10) so raising arms lifts
+          // the sleeve cleanly WITHOUT pulling the shoulder seam off the top of the shoulder!
+          const pivotU = isLeftSide ? 0.27 : 0.73;
+          const pivotV = 0.10;
           const pTopX = sTL.x + (sTR.x - sTL.x) * pivotU;
           const pTopY = sTL.y + (sTR.y - sTL.y) * pivotU;
           const pBotX = sBL.x + (sBR.x - sBL.x) * pivotU;
@@ -463,9 +465,12 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
           x -= downX * capLift;
           y -= downY * capLift;
         } else {
-          const drapeDrop = torsoHeight * 0.035 * sleeveMask;
-          x += downX * drapeDrop;
-          y += downY * drapeDrop;
+          // Natural gravity drape when arms hang down: heavy cotton sleeves fall downward & slightly inward
+          // along the upper arms instead of sticking straight out at 45° into empty air!
+          const drapeDrop = torsoHeight * (isOversized ? 0.065 : 0.042) * sleeveMask;
+          const inwardPull = (isLeftSide ? 1 : -1) * topWidth * (isOversized ? 0.042 : 0.022) * sleeveMask;
+          x += downX * drapeDrop + rightX * inwardPull;
+          y += downY * drapeDrop + rightY * inwardPull;
         }
       }
 
@@ -713,14 +718,10 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
   ctx.restore();
 
   // E. SAFE PERSON SILHOUETTE CLIPPING:
-  // Clip outer sleeves/edges to personMask, while ALWAYS keeping the inner torso core solid
-  // so backlit windows or bare skin NEVER punch holes through the middle of the T-shirt!
-  const shouldClipPerson =
-    personMask &&
-    videoTransform &&
-    (!isOversized || leftArmLift > 0.25 || rightArmLift > 0.25);
-  if (shouldClipPerson) {
-    // Build combined mask on occlusionCanvas (reused scratch) = personMask UNION inner torso core
+  // Clip outer sleeves/edges to personMask (slightly expanded +3% for Oversized so it drapes
+  // loosely without sticking out like stiff triangles into the background wall!), while ALWAYS
+  // keeping the inner chest/belly core solid so bright windows never punch holes.
+  if (personMask && videoTransform) {
     const { canvas: clipC, ctx: clipCtx } = ensureOcclusionCanvas(lw, lh);
     clipCtx.clearRect(0, 0, lw, lh);
     clipCtx.save();
@@ -729,6 +730,15 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
     }
     clipCtx.translate(lw, 0);
     clipCtx.scale(-1, 1);
+    if (isOversized && leftArmLift < 0.25 && rightArmLift < 0.25) {
+      // Gently expand mask by 3% around body center so oversized drop-shoulders stay relaxed but never float
+      const exp = 1.03;
+      const cxMask = videoTransform.offsetX * SCALE + videoTransform.drawW * SCALE * 0.5;
+      const cyMask = videoTransform.offsetY * SCALE + videoTransform.drawH * SCALE * 0.5;
+      clipCtx.translate(cxMask, cyMask);
+      clipCtx.scale(exp, exp);
+      clipCtx.translate(-cxMask, -cyMask);
+    }
     clipCtx.drawImage(
       personMask,
       videoTransform.offsetX * SCALE,
@@ -778,10 +788,6 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
   mainCtx.globalAlpha = blendAlpha / 100;
   mainCtx.imageSmoothingEnabled = true;
   mainCtx.imageSmoothingQuality = 'high';
-  mainCtx.shadowColor = 'rgba(0, 0, 0, 0.24)';
-  mainCtx.shadowBlur = 7;
-  mainCtx.shadowOffsetX = 0;
-  mainCtx.shadowOffsetY = 3;
   if (effectiveBrightness !== 100) {
     mainCtx.filter = `brightness(${effectiveBrightness}%)`;
   }
@@ -824,7 +830,6 @@ export function drawForegroundBodyOcclusion(
   if (nose && leftShoulder && rightShoulder) {
     const shMidX = (leftShoulder.x + rightShoulder.x) * 0.5;
     const shMidY = (leftShoulder.y + rightShoulder.y) * 0.5;
-    const headTopY = nose.y - shoulderWidth * 0.85;
 
     // Smoothly blend scoop center, width, and height from Front -> Side -> Back (zero snap!)
     // Kept tight inside the neckline hole so the T-shirt's real ribbed crew-neck collar stays 100% intact!
@@ -843,18 +848,25 @@ export function drawForegroundBodyOcclusion(
     const dipDepth = shoulderWidth * (0.065 * (1 - Math.max(sideBlend, backBlend)) + 0.03);
 
     oCtx.save();
-    oCtx.filter = 'blur(1.8px)';
+    oCtx.filter = 'blur(1.6px)';
     oCtx.fillStyle = '#ffffff';
+    // Keep outer head canopy strictly ABOVE the shoulders (at jaw/chin level) so it NEVER
+    // exposes bare upper shoulders, while dipping ONLY down the center neck into the collar hole!
+    const jawY = Math.min(collarY - shoulderWidth * 0.14, nose.y + (shMidY - nose.y) * 0.44);
     oCtx.beginPath();
-    oCtx.moveTo(neckCenterX - neckHalfW * 1.9, headTopY);
-    oCtx.lineTo(neckCenterX + neckHalfW * 1.9, headTopY);
-    oCtx.lineTo(neckCenterX + neckHalfW * 1.05, collarY - shoulderWidth * 0.04);
+    oCtx.moveTo(0, 0);
+    oCtx.lineTo(cw, 0);
+    oCtx.lineTo(cw, jawY);
+    oCtx.lineTo(neckCenterX + neckHalfW * 1.12, jawY);
+    oCtx.lineTo(neckCenterX + neckHalfW * 0.96, collarY - shoulderWidth * 0.02);
     oCtx.quadraticCurveTo(
       neckCenterX,
       collarY + dipDepth,
-      neckCenterX - neckHalfW * 1.05,
-      collarY - shoulderWidth * 0.04
+      neckCenterX - neckHalfW * 0.96,
+      collarY - shoulderWidth * 0.02
     );
+    oCtx.lineTo(neckCenterX - neckHalfW * 1.12, jawY);
+    oCtx.lineTo(0, jawY);
     oCtx.closePath();
     oCtx.fill();
     oCtx.restore();

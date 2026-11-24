@@ -523,7 +523,71 @@ export async function extractGarmentWithSegFormer(imageSrc, onProgress) {
   const trimmedCanvas = document.createElement('canvas');
   trimmedCanvas.width = Math.max(1, cW);
   trimmedCanvas.height = Math.max(1, cH);
-  trimmedCanvas.getContext('2d').drawImage(texCanvas, cX, cY, cW, cH, 0, 0, cW, cH);
+  const trCtx = trimmedCanvas.getContext('2d', { willReadFrequently: true });
+  trCtx.drawImage(texCanvas, cX, cY, cW, cH, 0, 0, cW, cH);
+
+  // Symmetric Torso Bite Repair: if a model's arm/hand crossed one side of the waist/belly
+  // (leaving a concave bite out of one side of the T-shirt), mirror-fill the missing fabric
+  // cleanly from the intact opposite side so the T-shirt silhouette stays 100% complete!
+  if (cW > 40 && cH > 40) {
+    const tImg = trCtx.getImageData(0, 0, cW, cH);
+    const td = tImg.data;
+    const midX = cW * 0.5;
+    const repairTop = Math.floor(cH * 0.42);
+    const repairBot = Math.floor(cH * 0.95);
+
+    for (let y = repairTop; y < repairBot; y++) {
+      let lx = -1;
+      let rx = -1;
+      for (let x = 0; x < cW; x++) {
+        if (td[(y * cW + x) * 4 + 3] > 140) {
+          lx = x;
+          break;
+        }
+      }
+      for (let x = cW - 1; x >= 0; x--) {
+        if (td[(y * cW + x) * 4 + 3] > 140) {
+          rx = x;
+          break;
+        }
+      }
+      if (lx < 0 || rx < 0) continue;
+
+      const leftDist = midX - lx;
+      const rightDist = rx - midX;
+
+      // If right side has a deep bite (> 14% narrower than left side), mirror-fill from left side
+      if (leftDist > cW * 0.16 && leftDist - rightDist > cW * 0.08) {
+        const targetRx = Math.min(cW - 1, Math.round(midX + leftDist));
+        for (let x = Math.max(0, rx - 2); x <= targetRx; x++) {
+          const mirrorX = Math.max(0, Math.min(cW - 1, Math.round(cW - 1 - x)));
+          const dstIdx = (y * cW + x) * 4;
+          const srcIdx = (y * cW + mirrorX) * 4;
+          if (td[dstIdx + 3] < td[srcIdx + 3]) {
+            td[dstIdx] = td[srcIdx];
+            td[dstIdx + 1] = td[srcIdx + 1];
+            td[dstIdx + 2] = td[srcIdx + 2];
+            td[dstIdx + 3] = td[srcIdx + 3];
+          }
+        }
+      } else if (rightDist > cW * 0.16 && rightDist - leftDist > cW * 0.08) {
+        // If left side has a deep bite, mirror-fill from right side
+        const targetLx = Math.max(0, Math.round(midX - rightDist));
+        for (let x = targetLx; x <= Math.min(cW - 1, lx + 2); x++) {
+          const mirrorX = Math.max(0, Math.min(cW - 1, Math.round(cW - 1 - x)));
+          const dstIdx = (y * cW + x) * 4;
+          const srcIdx = (y * cW + mirrorX) * 4;
+          if (td[dstIdx + 3] < td[srcIdx + 3]) {
+            td[dstIdx] = td[srcIdx];
+            td[dstIdx + 1] = td[srcIdx + 1];
+            td[dstIdx + 2] = td[srcIdx + 2];
+            td[dstIdx + 3] = td[srcIdx + 3];
+          }
+        }
+      }
+    }
+    trCtx.putImageData(tImg, 0, 0);
+  }
 
   onProgress?.(95, 'Computing universal garment anchors...');
   const anchors = computeGarmentAnchors(trimmedCanvas);

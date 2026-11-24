@@ -22,8 +22,8 @@ import {
 
 const FIT_PRESETS = [
   { id: 'fitted', label: 'Fitted', w: 0.94, h: 0.95, hipRatio: 0.92 },
-  { id: 'regular', label: 'Regular', w: 1.08, h: 1.05, hipRatio: 1.04 },
-  { id: 'oversized', label: 'Oversized', w: 1.18, h: 1.14, hipRatio: 1.14 },
+  { id: 'regular', label: 'Regular', w: 1.06, h: 1.04, hipRatio: 1.03 },
+  { id: 'oversized', label: 'Oversized', w: 1.11, h: 1.09, hipRatio: 1.10 },
   { id: 'cropped', label: 'Cropped', w: 1.05, h: 0.80, hipRatio: 1.02 },
 ];
 
@@ -685,17 +685,18 @@ export default function TryOnStudioScreen({
           smooth.sideBlend = lerp(smooth.sideBlend, targetSideBlend, 0.22);
           smooth.frontAlpha = lerp(smooth.frontAlpha, targetFrontAlpha, 0.22);
 
-          // Collar positioning: smoothly interpolate between front, oversized, side & back (zero jump!)
+          // Collar positioning: sit flush over the full trapezius/shoulders (zero bare shoulder strips!)
+          // while staying cleanly at the base of the neck (never climbing up to the jaw/beard!)
           const noseToShoulderY = shoulderMidY - pNose.y;
           const isOversizedFit = fitPreset.id === 'oversized';
           const turnRaiseBlend = Math.max(smooth.backBlend, smooth.sideBlend);
-          const frontCollarRaise = isOversizedFit ? -0.23 : -0.19;
+          const frontCollarRaise = isOversizedFit ? -0.215 : -0.205;
           const collarRaise = lerp(frontCollarRaise, -0.25, turnRaiseBlend);
-          const maxUpMult = lerp(isOversizedFit ? 0.66 : 0.56, 0.72, turnRaiseBlend);
+          const maxUpMult = lerp(isOversizedFit ? 0.60 : 0.58, 0.72, turnRaiseBlend);
           const maxUpwardCollar =
             noseToShoulderY > 15
               ? -noseToShoulderY * maxUpMult
-              : -torsoHeight * lerp(0.24, 0.28, turnRaiseBlend);
+              : -torsoHeight * lerp(0.22, 0.27, turnRaiseBlend);
           const rawTopShift = torsoHeight * (collarRaise + cOff);
           const topShift = Math.max(maxUpwardCollar, rawTopShift);
           const botShift = torsoHeight * (1.28 * fitPreset.h * lS - 0.14 + cOff);
@@ -948,6 +949,8 @@ export default function TryOnStudioScreen({
         } else if (trackingState) {
           trackingState = false;
           setIsTracking(false);
+          // Reset gender score gently when person leaves frame so a new person auto-detects immediately!
+          calibrationRef.current.feminineScore = 0.5;
         }
       }
 
