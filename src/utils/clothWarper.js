@@ -712,26 +712,51 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
   }
   ctx.restore();
 
-  // E. FEATHERED PIXEL-EXACT PERSON SILHOUETTE CLIPPING (eliminates 256x256 mask stair-stepping!)
+  // E. SAFE PERSON SILHOUETTE CLIPPING:
+  // Clip outer sleeves/edges to personMask, while ALWAYS keeping the inner torso core solid
+  // so backlit windows or bare skin NEVER punch holes through the middle of the T-shirt!
   const shouldClipPerson =
     personMask &&
     videoTransform &&
     (!isOversized || leftArmLift > 0.25 || rightArmLift > 0.25);
   if (shouldClipPerson) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'destination-in';
+    // Build combined mask on occlusionCanvas (reused scratch) = personMask UNION inner torso core
+    const { canvas: clipC, ctx: clipCtx } = ensureOcclusionCanvas(lw, lh);
+    clipCtx.clearRect(0, 0, lw, lh);
+    clipCtx.save();
     if (!lowPowerMode) {
-      ctx.filter = 'blur(1.5px)';
+      clipCtx.filter = 'blur(1.2px)';
     }
-    ctx.translate(lw, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(
+    clipCtx.translate(lw, 0);
+    clipCtx.scale(-1, 1);
+    clipCtx.drawImage(
       personMask,
       videoTransform.offsetX * SCALE,
       videoTransform.offsetY * SCALE,
       videoTransform.drawW * SCALE,
       videoTransform.drawH * SCALE
     );
+    clipCtx.restore();
+
+    // Paint solid inner torso core (between shoulder seams & waist) so the chest/back NEVER gets holes!
+    const coreTL = { x: sTL.x + (sTR.x - sTL.x) * 0.23, y: sTL.y + (sTR.y - sTL.y) * 0.23 };
+    const coreTR = { x: sTL.x + (sTR.x - sTL.x) * 0.77, y: sTL.y + (sTR.y - sTL.y) * 0.77 };
+    const coreBR = { x: sBL.x + (sBR.x - sBL.x) * 0.80, y: sBL.y + (sBR.y - sBL.y) * 0.80 };
+    const coreBL = { x: sBL.x + (sBR.x - sBL.x) * 0.20, y: sBL.y + (sBR.y - sBL.y) * 0.20 };
+    clipCtx.save();
+    clipCtx.fillStyle = '#ffffff';
+    clipCtx.beginPath();
+    clipCtx.moveTo(coreTL.x, coreTL.y);
+    clipCtx.lineTo(coreTR.x, coreTR.y);
+    clipCtx.lineTo(coreBR.x, coreBR.y);
+    clipCtx.lineTo(coreBL.x, coreBL.y);
+    clipCtx.closePath();
+    clipCtx.fill();
+    clipCtx.restore();
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(clipC, 0, 0, lw, lh);
     ctx.restore();
   }
 

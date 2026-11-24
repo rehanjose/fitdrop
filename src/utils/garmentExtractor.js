@@ -461,16 +461,30 @@ export async function extractGarmentWithSegFormer(imageSrc, onProgress) {
     const mDrawW = (drawW / INF_SIZE) * maskW;
     const mDrawH = (drawH / INF_SIZE) * maskH;
 
-    // Upscale smooth feathered mask onto 1024px texture canvas
+    // Upscale mask onto 1024px texture canvas and sharpen alpha ramp so collar & sleeve
+    // edges are CRISP real fabric (never a soft airbrushed "body-paint" fade!)
     const fullMaskCanvas = document.createElement('canvas');
     fullMaskCanvas.width = texW;
     fullMaskCanvas.height = texH;
-    const fmCtx = fullMaskCanvas.getContext('2d');
+    const fmCtx = fullMaskCanvas.getContext('2d', { willReadFrequently: true });
     fmCtx.imageSmoothingEnabled = true;
     fmCtx.imageSmoothingQuality = 'high';
-    fmCtx.filter = 'blur(1.5px)';
     fmCtx.drawImage(smallMaskCanvas, mPadX, mPadY, mDrawW, mDrawH, 0, 0, texW, texH);
-    fmCtx.filter = 'none';
+
+    // Crisp fabric edge threshold (turns blurry 128->1024 interpolation into a sharp 1.5px anti-aliased edge)
+    const fmImg = fmCtx.getImageData(0, 0, texW, texH);
+    const fmD = fmImg.data;
+    for (let i = 3; i < fmD.length; i += 4) {
+      const a = fmD[i];
+      if (a <= 112) {
+        fmD[i] = 0;
+      } else if (a >= 164) {
+        fmD[i] = 255;
+      } else {
+        fmD[i] = Math.round(((a - 112) / 52) * 255);
+      }
+    }
+    fmCtx.putImageData(fmImg, 0, 0);
 
     texCtx.save();
     texCtx.globalCompositeOperation = 'destination-in';

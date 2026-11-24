@@ -13,11 +13,6 @@ import {
   Eye,
 } from 'lucide-react';
 import { preloadPoseLandmarker } from '../utils/poseEngine';
-import {
-  preloadVisionEngine,
-  unpackMulticlassMasks,
-  drawMulticlassForegroundOcclusion,
-} from '../utils/visionEngine';
 import { PoseLandmarkOneEuroFilter } from '../utils/oneEuroFilter';
 import {
   drawWarpedGarment,
@@ -174,12 +169,9 @@ export default function TryOnStudioScreen({
     let rafId = null;
     let cancelled = false;
     let landmarker = null;
-    let multiclassSegmenter = null;
-    let latestMulticlassMasks = null;
     let lastVideoTime = -1;
     let lastTimestampMs = 0;
     let frameCount = 0;
-    let videoFrameIdx = 0;
     let avgFrameMs = 20;
     let lastFrameStart = performance.now();
     let lowPowerMode = false;
@@ -230,12 +222,6 @@ export default function TryOnStudioScreen({
     preloadPoseLandmarker()
       .then((instance) => {
         if (!cancelled) landmarker = instance;
-      })
-      .catch(() => {});
-
-    preloadVisionEngine()
-      .then(({ imageSegmenter }) => {
-        if (!cancelled && imageSegmenter) multiclassSegmenter = imageSegmenter;
       })
       .catch(() => {});
 
@@ -298,25 +284,6 @@ export default function TryOnStudioScreen({
           if (result?.segmentationMasks?.length > 0) {
             latestPersonMask = updatePersonMaskCanvas(result.segmentationMasks[0]);
             result.segmentationMasks.forEach((m) => m.close?.());
-          }
-          // Run Selfie Multiclass 256x256 segmenter for pixel-exact hair, beard/face & body-skin occlusion!
-          // On integrated Windows iGPUs / older Macs (lowPowerMode), run on every 2nd video frame
-          // while reusing the temporally-smoothed masks for silky 30+ FPS!
-          videoFrameIdx++;
-          const runSegThisFrame = !lowPowerMode || videoFrameIdx % 2 === 0;
-          if (multiclassSegmenter && runSegThisFrame) {
-            try {
-              const segRes = multiclassSegmenter.segmentForVideo(video, nowMs);
-              if (segRes?.categoryMask) {
-                latestMulticlassMasks = unpackMulticlassMasks(segRes.categoryMask);
-                if (latestMulticlassMasks?.personMask) {
-                  latestPersonMask = latestMulticlassMasks.personMask;
-                }
-                segRes.categoryMask.close?.();
-              }
-            } catch {
-              // Keep pose segmentation mask fallback
-            }
           }
         } catch (detectErr) {
           console.warn('Pose frame warning:', detectErr);
@@ -543,7 +510,10 @@ export default function TryOnStudioScreen({
           const refAxisY = torsoPerpX >= 0 ? torsoPerpY : -torsoPerpY;
 
           // Solid Body Calibration + Fast Automatic Women's / Men's Silhouette Detection
-          const isFacingFrontClean = (lmRS.x - lmLS.x) < -0.04 && Math.abs(clampedYaw) < 0.35;
+          // Pause proportion sampling when arms are raised overhead (shrugged shoulders narrow artificially!)
+          const armsDown = smooth.leftArmLift < 0.25 && smooth.rightArmLift < 0.25;
+          const isFacingFrontClean =
+            (lmRS.x - lmLS.x) < -0.04 && Math.abs(clampedYaw) < 0.35 && armsDown;
 
           // Continuous proportion cues when facing front (adapts quickly when a new person steps in!)
           if (isFacingFrontClean) {
@@ -1041,20 +1011,8 @@ export default function TryOnStudioScreen({
             }
           );
 
-          // Composite real hair, face/beard/glasses & foreground forearms/hands ON TOP of the T-shirt!
-          // Uses neural Selfie Multiclass masks when ready (pixel-exact hair & skin), with clean fallback.
-          if (latestMulticlassMasks && latestBodyOcclusion) {
-            const ls = latestBodyOcclusion.leftShoulder;
-            const rs = latestBodyOcclusion.rightShoulder;
-            drawMulticlassForegroundOcclusion(ctx, video, vTransform, latestMulticlassMasks, {
-              arms: [latestBodyOcclusion.leftArm, latestBodyOcclusion.rightArm],
-              shoulderWidth: latestBodyOcclusion.shoulderWidth,
-              nose: latestBodyOcclusion.nose,
-              neckCenter:
-                ls && rs ? { x: (ls.x + rs.x) * 0.5, y: (ls.y + rs.y) * 0.5 } : null,
-              backBlend: latestBodyOcclusion.backBlend,
-            });
-          } else if (latestBodyOcclusion) {
+          // Composite real neck/head/hair + skin-refined hands/fingers/forearms ON TOP of the T-shirt!
+          if (latestBodyOcclusion) {
             drawForegroundBodyOcclusion(
               ctx,
               video,

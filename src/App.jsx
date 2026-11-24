@@ -8,7 +8,6 @@ import {
 } from './utils/cutoutEngine';
 import { preloadPoseLandmarker, subscribePoseStatus } from './utils/poseEngine';
 import { warmupClothParser } from './utils/garmentExtractor';
-import { preloadVisionEngine } from './utils/visionEngine';
 import HomeScreen from './components/HomeScreen';
 import CameraPermissionModal from './components/CameraPermissionModal';
 import UploadGridScreen from './components/UploadGridScreen';
@@ -45,11 +44,10 @@ export default function App() {
   // Snapshot Modal state
   const [snapshot, setSnapshot] = useState(null);
 
-  // Pre-load MediaPipe Pose + Multiclass Segmenter + SegFormer-B2 Clothes Worker + Demo Tees on mount!
+  // Pre-load MediaPipe Pose + SegFormer-B2 Clothes Worker + photorealistic demo tee cutouts on mount!
   useEffect(() => {
     const unsub = subscribePoseStatus(setPoseStatus);
     preloadPoseLandmarker().catch(() => {});
-    preloadVisionEngine().catch(() => {});
     warmupClothParser();
     loadPhotorealisticDemoTees()
       .then((cleanDemoTees) => {
