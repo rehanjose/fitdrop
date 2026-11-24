@@ -199,6 +199,52 @@ export async function instantLightBgCutout(imageSrc, onProgress, skipTrim = fals
     }
   }
 
+  // Keep ONLY the largest connected garment component!
+  // Automatically strips stray website UI thumbnails, < > carousel arrows, and X buttons from store screenshots!
+  const labels = new Int32Array(w * h);
+  const compQueue = new Int32Array(w * h);
+  let curLabel = 0;
+  let bestLabel = 0;
+  let bestSize = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (labels[i] !== 0 || data[i * 4 + 3] < 40) continue;
+    curLabel++;
+    let cHead = 0;
+    let cTail = 0;
+    labels[i] = curLabel;
+    compQueue[cTail++] = i;
+    while (cHead < cTail) {
+      const pos = compQueue[cHead++];
+      const x = pos % w;
+      const y = (pos - x) / w;
+      if (x > 0 && labels[pos - 1] === 0 && data[(pos - 1) * 4 + 3] >= 40) {
+        labels[pos - 1] = curLabel;
+        compQueue[cTail++] = pos - 1;
+      }
+      if (x < w - 1 && labels[pos + 1] === 0 && data[(pos + 1) * 4 + 3] >= 40) {
+        labels[pos + 1] = curLabel;
+        compQueue[cTail++] = pos + 1;
+      }
+      if (y > 0 && labels[pos - w] === 0 && data[(pos - w) * 4 + 3] >= 40) {
+        labels[pos - w] = curLabel;
+        compQueue[cTail++] = pos - w;
+      }
+      if (y < h - 1 && labels[pos + w] === 0 && data[(pos + w) * 4 + 3] >= 40) {
+        labels[pos + w] = curLabel;
+        compQueue[cTail++] = pos + w;
+      }
+    }
+    if (cTail > bestSize) {
+      bestSize = cTail;
+      bestLabel = curLabel;
+    }
+  }
+  if (bestLabel > 0 && bestSize > w * h * 0.04) {
+    for (let i = 0; i < w * h; i++) {
+      if (labels[i] !== bestLabel) data[i * 4 + 3] = 0;
+    }
+  }
+
   ctx.putImageData(imgData, 0, 0);
   onProgress?.(90, 'Trimming garment bounds...');
 
@@ -822,13 +868,53 @@ async function autoLevelCutoutWithPose(textureUrl, landmarks) {
 }
 
 /**
- * High-quality local AI garment extraction:
- * 1. Primary (AI mode): SegFormer-B2-Clothes 18-class neural fashion parser (WebGPU -> WASM SIMD)
- *    which cleanly isolates ONLY `upper-clothes` from ANY e-commerce model shoot or busy background!
- * 2. Automatic fallback: @imgly/background-removal + MediaPipe Pose surgical model extractor.
+ * Checks if an uploaded flat-lay photo has a clean uniform/studio background around its border
+ * (e.g. e-commerce product photo or screenshot on white/light-grey background).
+ */
+async function hasCleanUniformBackground(imageSrc) {
+  try {
+    const img = await loadImage(imageSrc);
+    const c = document.createElement('canvas');
+    c.width = 96;
+    c.height = 96;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, 96, 96);
+    const d = ctx.getImageData(0, 0, 96, 96).data;
+
+    // Sample right, top, and bottom borders (skipping left edge in case of e-commerce thumbnail strip!)
+    const samples = [];
+    for (let x = 16; x < 92; x += 4) {
+      for (const y of [2, 93]) {
+        const idx = (y * 96 + x) * 4;
+        samples.push([d[idx], d[idx + 1], d[idx + 2]]);
+      }
+    }
+    for (let y = 12; y < 86; y += 4) {
+      const idx = (y * 96 + 93) * 4;
+      samples.push([d[idx], d[idx + 1], d[idx + 2]]);
+    }
+    const mean = [0, 1, 2].map((k) => samples.reduce((s, p) => s + p[k], 0) / samples.length);
+    let closeCount = 0;
+    for (const p of samples) {
+      const dist = Math.hypot(p[0] - mean[0], p[1] - mean[1], p[2] - mean[2]);
+      if (dist < 28) closeCount++;
+    }
+    return closeCount / samples.length > 0.82;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Smart Hybrid AI Garment Extraction:
+ * 1. E-Commerce MODEL SHOOT detected -> SegFormer-B2-Clothes 18-class neural fashion parser
+ *    (isolates ONLY upper-clothes, stripping head, hair, arms, jeans & busy backgrounds!)
+ * 2. FLAT-LAY on uniform studio background -> Full-res 1280px crisp flood-fill + largest-component keep
+ *    (razor-sharp ribbed collar & logos, auto-strips website thumbnails/< > arrows/X buttons in 0.1s!)
+ * 3. FLAT-LAY on busy background -> @imgly/background-removal AI cutout.
  */
 export async function processGarmentImage(imageSrc, mode = 'ai', onProgress) {
-  // Detect pose landmarks on the uploaded photo (identifies model shoots & shoulder tilt)
+  // Detect pose landmarks on the uploaded photo (identifies model shoots vs. flat-lay photos!)
   let modelLandmarks = null;
   try {
     const origImg = await loadImage(imageSrc);
@@ -843,28 +929,35 @@ export async function processGarmentImage(imageSrc, mode = 'ai', onProgress) {
       }
     }
   } catch {
-    // Proceed as standard garment
+    // Proceed as standard flat-lay garment
   }
 
-  // PRIMARY ENGINE: SegFormer-B2-Clothes Neural Fashion Parser (excels on e-commerce model photos!)
-  if (mode === 'ai') {
+  // CASE 1: MODEL SHOOT -> Use SegFormer-B2-Clothes Neural Fashion Parser!
+  if (mode === 'ai' && modelLandmarks) {
     try {
-      onProgress?.(12, modelLandmarks ? 'Model shoot detected — running SegFormer-B2 AI...' : 'Running SegFormer-B2 garment parser...');
+      onProgress?.(12, 'Model shoot detected — running SegFormer-B2 AI...');
       const segResult = await extractGarmentWithSegFormer(imageSrc, (pct, msg) => {
         onProgress?.(Math.min(92, Math.round(pct * 0.92)), msg);
       });
 
       if (segResult?.textureUrl) {
         onProgress?.(95, 'Auto-leveling shoulders & finalizing cutout...');
-        const leveled = modelLandmarks
-          ? await autoLevelCutoutWithPose(segResult.textureUrl, modelLandmarks)
-          : segResult.textureUrl;
+        const leveled = await autoLevelCutoutWithPose(segResult.textureUrl, modelLandmarks);
         onProgress?.(100, `Extracted via SegFormer-B2 (${segResult.provider?.toUpperCase() || 'AI'})`);
         return leveled;
       }
     } catch (segErr) {
       console.warn('SegFormer-B2 parser fallback to background-removal:', segErr);
     }
+  }
+
+  // CASE 2: FLAT-LAY ON STUDIO/PLAIN BACKGROUND -> Full-res crisp cutout + UI-element removal!
+  if (!modelLandmarks && (mode === 'instant' || (await hasCleanUniformBackground(imageSrc)))) {
+    onProgress?.(25, 'Flat-lay studio photo detected — crisp full-res cutout...');
+    const rawStudio = await instantLightBgCutout(imageSrc, onProgress, false);
+    const cleaned = await cleanUploadedGarmentCutout(rawStudio);
+    onProgress?.(100, 'Crisp full-res cutout ready');
+    return cleaned;
   }
 
   let rawCutout = null;

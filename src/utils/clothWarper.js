@@ -738,11 +738,19 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
     );
     clipCtx.restore();
 
-    // Paint solid inner torso core (between shoulder seams & waist) so the chest/back NEVER gets holes!
-    const coreTL = { x: sTL.x + (sTR.x - sTL.x) * 0.23, y: sTL.y + (sTR.y - sTL.y) * 0.23 };
-    const coreTR = { x: sTL.x + (sTR.x - sTL.x) * 0.77, y: sTL.y + (sTR.y - sTL.y) * 0.77 };
-    const coreBR = { x: sBL.x + (sBR.x - sBL.x) * 0.80, y: sBL.y + (sBR.y - sBL.y) * 0.80 };
-    const coreBL = { x: sBL.x + (sBR.x - sBL.x) * 0.20, y: sBL.y + (sBR.y - sBL.y) * 0.20 };
+    // Paint solid inner chest/stomach core (starting BELOW the sloping shoulders at v=0.26!)
+    // so the shoulders follow personMask smoothly (zero rectangular corners!) while the chest/belly NEVER gets holes.
+    const ptQ = (u, v) => {
+      const tx = sTL.x + (sTR.x - sTL.x) * u;
+      const ty = sTL.y + (sTR.y - sTL.y) * u;
+      const bx = sBL.x + (sBR.x - sBL.x) * u;
+      const by = sBL.y + (sBR.y - sBL.y) * u;
+      return { x: tx + (bx - tx) * v, y: ty + (by - ty) * v };
+    };
+    const coreTL = ptQ(0.27, 0.26);
+    const coreTR = ptQ(0.73, 0.26);
+    const coreBR = ptQ(0.76, 0.94);
+    const coreBL = ptQ(0.24, 0.94);
     clipCtx.save();
     clipCtx.fillStyle = '#ffffff';
     clipCtx.beginPath();
@@ -819,32 +827,33 @@ export function drawForegroundBodyOcclusion(
     const headTopY = nose.y - shoulderWidth * 0.85;
 
     // Smoothly blend scoop center, width, and height from Front -> Side -> Back (zero snap!)
+    // Kept tight inside the neckline hole so the T-shirt's real ribbed crew-neck collar stays 100% intact!
     const neckCenterX = shMidX + (nose.x - shMidX) * (sideBlend * 0.48);
-    const frontHalfW = shoulderWidth * 0.25;
-    const sideHalfW = shoulderWidth * 0.14;
-    const backHalfW = shoulderWidth * 0.22;
+    const frontHalfW = shoulderWidth * 0.19;
+    const sideHalfW = shoulderWidth * 0.13;
+    const backHalfW = shoulderWidth * 0.18;
     const baseHalfW = frontHalfW * (1 - backBlend) + backHalfW * backBlend;
     const neckHalfW = baseHalfW * (1 - sideBlend) + sideHalfW * sideBlend;
 
-    const frontScoopY = shMidY - shoulderWidth * 0.02;
-    const backScoopY = shMidY - shoulderWidth * 0.17;
-    const sideScoopY = shMidY - shoulderWidth * 0.19;
+    const frontScoopY = shMidY - shoulderWidth * 0.10;
+    const backScoopY = shMidY - shoulderWidth * 0.19;
+    const sideScoopY = shMidY - shoulderWidth * 0.20;
     const baseScoopY = frontScoopY * (1 - backBlend) + backScoopY * backBlend;
     const collarY = baseScoopY * (1 - sideBlend) + sideScoopY * sideBlend;
-    const dipDepth = shoulderWidth * (0.12 * (1 - Math.max(sideBlend, backBlend)) + 0.05);
+    const dipDepth = shoulderWidth * (0.065 * (1 - Math.max(sideBlend, backBlend)) + 0.03);
 
     oCtx.save();
-    oCtx.filter = 'blur(2px)';
+    oCtx.filter = 'blur(1.8px)';
     oCtx.fillStyle = '#ffffff';
     oCtx.beginPath();
-    oCtx.moveTo(neckCenterX - neckHalfW * 2.0, headTopY);
-    oCtx.lineTo(neckCenterX + neckHalfW * 2.0, headTopY);
-    oCtx.lineTo(neckCenterX + neckHalfW * 1.15, collarY - shoulderWidth * 0.08);
+    oCtx.moveTo(neckCenterX - neckHalfW * 1.9, headTopY);
+    oCtx.lineTo(neckCenterX + neckHalfW * 1.9, headTopY);
+    oCtx.lineTo(neckCenterX + neckHalfW * 1.05, collarY - shoulderWidth * 0.04);
     oCtx.quadraticCurveTo(
       neckCenterX,
       collarY + dipDepth,
-      neckCenterX - neckHalfW * 1.15,
-      collarY - shoulderWidth * 0.08
+      neckCenterX - neckHalfW * 1.05,
+      collarY - shoulderWidth * 0.04
     );
     oCtx.closePath();
     oCtx.fill();
