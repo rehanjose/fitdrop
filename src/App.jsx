@@ -89,15 +89,25 @@ export default function App() {
     setIsRequestingCamera(true);
     setCameraError('');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-          facingMode: 'user',
-        },
-        audio: false,
-      });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+            facingMode: 'user',
+          },
+          audio: false,
+        });
+      } catch (constraintErr) {
+        // Fallback for older Windows/Mac webcams that reject 1280x720 constraints
+        console.warn('Ideal 720p webcam constraint failed, retrying default camera:', constraintErr);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' },
+          audio: false,
+        });
+      }
       setCameraStream(stream);
       setCameraModalOpen(false);
       if (pendingCameraTargetRef.current) {

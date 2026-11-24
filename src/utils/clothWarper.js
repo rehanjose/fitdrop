@@ -316,6 +316,7 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
     backImg = null, // Clean plain-cotton back/side texture for seamless 3D cross-fade
     frontAlpha = 1, // Smooth 0..1 cross-fade of front graphic as torso rotates sideways
     sideBlend = 0, // Smooth 0..1 side-profile factor (sin² of turn angle)
+    lowPowerMode = false, // Auto-enabled on slower Windows iGPUs / older Macs to keep 30+ FPS
   } = options;
 
   const { tl, tr, br, bl } = quad;
@@ -357,9 +358,9 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
     ? stepClothPhysics((sTL.x + sTR.x) * 0.5, (sTL.y + sTR.y) * 0.5, (leftArmLift + rightArmLift) * 0.5)
     : { swayX: 0, swayY: 0, ripplePhase: 0, energy: 0 };
 
-  // High-precision 12x12 grid (288 triangles — silky-smooth armpit/sleeve skeletal skinning & draping)
-  const COLS = 12;
-  const ROWS = 12;
+  // Adaptive mesh density: 12x12 on fast laptops (M-series / dGPU), 8x8 on integrated GPUs for smooth 30-60 FPS
+  const COLS = lowPowerMode ? 8 : 12;
+  const ROWS = lowPowerMode ? 8 : 12;
 
   const smoothstep = (e0, e1, val) => {
     const t = Math.max(0, Math.min(1, (val - e0) / (e1 - e0)));
@@ -719,7 +720,9 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
   if (shouldClipPerson) {
     ctx.save();
     ctx.globalCompositeOperation = 'destination-in';
-    ctx.filter = 'blur(1.5px)';
+    if (!lowPowerMode) {
+      ctx.filter = 'blur(1.5px)';
+    }
     ctx.translate(lw, 0);
     ctx.scale(-1, 1);
     ctx.drawImage(

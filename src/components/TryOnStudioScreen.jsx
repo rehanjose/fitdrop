@@ -179,6 +179,10 @@ export default function TryOnStudioScreen({
     let lastVideoTime = -1;
     let lastTimestampMs = 0;
     let frameCount = 0;
+    let videoFrameIdx = 0;
+    let avgFrameMs = 20;
+    let lastFrameStart = performance.now();
+    let lowPowerMode = false;
     let lastFpsUpdate = performance.now();
     let trackingState = false;
     let sideState = 'front';
@@ -296,7 +300,11 @@ export default function TryOnStudioScreen({
             result.segmentationMasks.forEach((m) => m.close?.());
           }
           // Run Selfie Multiclass 256x256 segmenter for pixel-exact hair, beard/face & body-skin occlusion!
-          if (multiclassSegmenter) {
+          // On integrated Windows iGPUs / older Macs (lowPowerMode), run on every 2nd video frame
+          // while reusing the temporally-smoothed masks for silky 30+ FPS!
+          videoFrameIdx++;
+          const runSegThisFrame = !lowPowerMode || videoFrameIdx % 2 === 0;
+          if (multiclassSegmenter && runSegThisFrame) {
             try {
               const segRes = multiclassSegmenter.segmentForVideo(video, nowMs);
               if (segRes?.categoryMask) {
@@ -1029,6 +1037,7 @@ export default function TryOnStudioScreen({
               backImg: backOrSideImg,
               frontAlpha: effectiveFrontAlpha,
               sideBlend: smooth.sideBlend,
+              lowPowerMode,
             }
           );
 
@@ -1057,9 +1066,16 @@ export default function TryOnStudioScreen({
         }
       }
 
-      // Update FPS counter once per second
+      // Update FPS counter & auto-adapt performance tier for Mac / Windows integrated GPUs
       frameCount++;
       const now = performance.now();
+      const frameDelta = now - lastFrameStart;
+      lastFrameStart = now;
+      if (frameDelta > 4 && frameDelta < 250) {
+        avgFrameMs = avgFrameMs * 0.92 + frameDelta * 0.08;
+        if (!lowPowerMode && avgFrameMs > 44) lowPowerMode = true;
+        else if (lowPowerMode && avgFrameMs < 26) lowPowerMode = false;
+      }
       if (now - lastFpsUpdate >= 1000) {
         setFps(frameCount);
         frameCount = 0;

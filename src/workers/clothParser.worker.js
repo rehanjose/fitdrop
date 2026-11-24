@@ -43,10 +43,20 @@ async function getSession() {
     let lastErr = null;
     for (const providers of providerOrder) {
       try {
-        const s = await ort.InferenceSession.create(MODEL_URL, {
+        const createPromise = ort.InferenceSession.create(MODEL_URL, {
           executionProviders: providers,
           graphOptimizationLevel: 'all',
         });
+        // Guard against stalled older Windows/Intel WebGPU drivers so we fall back cleanly to WASM SIMD
+        const s =
+          providers[0] === 'webgpu'
+            ? await Promise.race([
+                createPromise,
+                new Promise((_, reject) =>
+                  setTimeout(() => reject(new Error('WebGPU init timeout')), 8000)
+                ),
+              ])
+            : await createPromise;
         session = s;
         activeProvider = providers[0];
         return s;

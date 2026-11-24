@@ -12,6 +12,8 @@
 
   * {
     box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: #2C2C32 #0B0B0C;
   }
 
   html,
@@ -69,6 +71,16 @@ input[type='range'].studio-slider::-webkit-slider-thumb {
 
 input[type='range'].studio-slider::-webkit-slider-thumb:hover {
   transform: scale(1.2);
+}
+
+input[type='range'].studio-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #CCFF00;
+  border: 2px solid #0B0B0C;
+  box-shadow: 0 0 0 1px rgba(204, 255, 0, 0.5);
+  cursor: pointer;
 }
 
 /* Subtle custom scrollbar */
