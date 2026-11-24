@@ -25,6 +25,7 @@ let armVideoCtx = null;
 let maskCanvas = null;
 let maskCtx = null;
 let maskImgData = null;
+let smoothMaskProb = null;
 
 // Lightweight Spring-Damper Cloth Inertia State (gives hem & sleeves organic sway & ripple)
 const clothPhysics = {
@@ -194,7 +195,9 @@ function ensureHalfResArmCanvases(hw, hh) {
 }
 
 /**
- * Updates a lightweight reusable alpha-mask canvas from MediaPipe's Float32 segmentation mask.
+ * Updates a temporally-smoothed alpha-mask canvas from MediaPipe's Float32 segmentation mask.
+ * Uses adaptive per-pixel EMA: heavy smoothing on small border noise (eliminates shoulder/arm
+ * edge shimmer!) while responding instantaneously to fast hand/body movement (zero ghosting).
  */
 export function updatePersonMaskCanvas(segMask) {
   if (!segMask) return null;
@@ -210,15 +213,30 @@ export function updatePersonMaskCanvas(segMask) {
     maskCanvas.width = mw;
     maskCanvas.height = mh;
     maskImgData = maskCtx.createImageData(mw, mh);
+    smoothMaskProb = null;
   }
 
   const floatData = segMask.getAsFloat32Array();
+  const len = floatData.length;
+  if (!smoothMaskProb || smoothMaskProb.length !== len) {
+    smoothMaskProb = new Float32Array(floatData);
+  } else {
+    for (let i = 0; i < len; i++) {
+      const curr = floatData[i];
+      const prev = smoothMaskProb[i];
+      const diff = Math.abs(curr - prev);
+      // Small edge flicker -> heavy temporal lock (0.18); real motion -> fast snap (0.68)
+      const ema = diff < 0.28 ? 0.18 : diff < 0.50 ? 0.42 : 0.72;
+      smoothMaskProb[i] = prev + (curr - prev) * ema;
+    }
+  }
+
   const pixels = maskImgData.data;
 
-  // Convert 0..1 body probability into crisp-yet-soft alpha mask (slightly generous at 0.32 so sleeves fit cleanly)
-  for (let i = 0; i < floatData.length; i++) {
-    const p = floatData[i];
-    const alpha = p < 0.25 ? 0 : p > 0.65 ? 255 : Math.round(((p - 0.25) / 0.4) * 255);
+  // Convert smoothed 0..1 body probability into clean anti-aliased alpha mask
+  for (let i = 0; i < len; i++) {
+    const p = smoothMaskProb[i];
+    const alpha = p < 0.28 ? 0 : p > 0.68 ? 255 : Math.round(((p - 0.28) / 0.40) * 255);
     const idx = i * 4;
     pixels[idx] = 255;
     pixels[idx + 1] = 255;
@@ -460,12 +478,13 @@ export function drawWarpedGarment(mainCtx, img, quad, options = {}) {
         y -= downY * hemPull;
       }
 
-      // 3. Spring-Damper Cloth Inertia & Subtle Wrinkle Wave Displacement (bottom hem & sleeves sway!)
+      // 3. Spring-Damper Cloth Inertia & Subtle Wrinkle Wave Displacement (calm at rest, organic sway on motion!)
       if (enableWrinklePhysics) {
         const looseWeight = v * v; // Zero at pinned shoulders, max at loose bottom hem
-        const wave = Math.sin(u * Math.PI * 3.5 + phys.ripplePhase) * (1.2 + phys.energy * 3.5) * looseWeight;
-        x += phys.swayX * looseWeight + wave * 0.5;
-        y += phys.swayY * looseWeight * 0.6 + Math.cos(u * Math.PI * 2.5 + phys.ripplePhase) * phys.energy * 2.2 * looseWeight;
+        const motionFactor = Math.min(1, phys.energy * 2.2);
+        const wave = Math.sin(u * Math.PI * 3.5 + phys.ripplePhase) * (phys.energy * 3.0) * motionFactor * looseWeight;
+        x += phys.swayX * looseWeight + wave * 0.45;
+        y += phys.swayY * looseWeight * 0.55 + Math.cos(u * Math.PI * 2.5 + phys.ripplePhase) * phys.energy * 1.8 * motionFactor * looseWeight;
       }
 
       // 4. True 3D Cylindrical Foreshortening (chest print & cotton weave curve naturally around torso!)

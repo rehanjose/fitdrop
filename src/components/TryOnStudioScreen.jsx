@@ -13,6 +13,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { preloadPoseLandmarker } from '../utils/poseEngine';
+import { PoseLandmarkOneEuroFilter } from '../utils/oneEuroFilter';
 import {
   drawWarpedGarment,
   drawForegroundBodyOcclusion,
@@ -177,6 +178,9 @@ export default function TryOnStudioScreen({
     let lastAmbientSampleTime = 0;
     let ambientTint = { r: 210, g: 205, b: 200, lum: 165 };
     let skinTone = null; // Live face-calibrated { y, cb, cr } for pixel-accurate hand/finger occlusion
+    // One Euro Filter across all 33 pose landmarks: kills shoulder, arm & hand micro-jitter at rest
+    // while keeping ultra-low latency during fast arm raises and body turns!
+    const poseFilter = new PoseLandmarkOneEuroFilter(33, 0.85, 0.04, 1.0);
 
     // Deadzone + quadratic velocity-adaptive smoother (zero micro-jitter when still, instant snap when moving!)
     const adaptiveLerp = (curr, target, scaleRef) => {
@@ -272,7 +276,7 @@ export default function TryOnStudioScreen({
         try {
           const result = landmarker.detectForVideo(video, nowMs);
           if (result?.landmarks?.length > 0) {
-            poseLandmarks = result.landmarks[0];
+            poseLandmarks = poseFilter.filterAll(result.landmarks[0], nowMs);
           }
           if (result?.segmentationMasks?.length > 0) {
             latestPersonMask = updatePersonMaskCanvas(result.segmentationMasks[0]);
@@ -923,11 +927,17 @@ export default function TryOnStudioScreen({
             smooth.bl.y = adaptiveLerp(smooth.bl.y, targetBL.y, torsoHeight);
             smooth.br.x = adaptiveLerp(smooth.br.x, targetBR.x, estFullShoulderW);
             smooth.br.y = adaptiveLerp(smooth.br.y, targetBR.y, torsoHeight);
-            smooth.yaw = lerp(smooth.yaw, clampedYaw, 0.25);
-            smooth.leftArmLift = lerp(smooth.leftArmLift, screenLeftLift, 0.3);
-            smooth.rightArmLift = lerp(smooth.rightArmLift, screenRightLift, 0.3);
-            smooth.leftSleeveDelta = lerp(smooth.leftSleeveDelta, screenLeftDelta, 0.32);
-            smooth.rightSleeveDelta = lerp(smooth.rightSleeveDelta, screenRightDelta, 0.32);
+            smooth.yaw = lerp(smooth.yaw, clampedYaw, 0.18);
+            smooth.leftArmLift = lerp(smooth.leftArmLift, screenLeftLift, 0.22);
+            smooth.rightArmLift = lerp(smooth.rightArmLift, screenRightLift, 0.22);
+            smooth.leftSleeveDelta =
+              Math.abs(screenLeftDelta - smooth.leftSleeveDelta) < 0.045
+                ? lerp(smooth.leftSleeveDelta, screenLeftDelta, 0.08)
+                : lerp(smooth.leftSleeveDelta, screenLeftDelta, 0.24);
+            smooth.rightSleeveDelta =
+              Math.abs(screenRightDelta - smooth.rightSleeveDelta) < 0.045
+                ? lerp(smooth.rightSleeveDelta, screenRightDelta, 0.08)
+                : lerp(smooth.rightSleeveDelta, screenRightDelta, 0.24);
           }
         } else if (trackingState) {
           trackingState = false;
