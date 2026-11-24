@@ -124,6 +124,18 @@ export async function instantLightBgCutout(imageSrc, onProgress, skipTrim = fals
   const bgG = gSum / count;
   const bgB = bSum / count;
 
+  // Measure border uniformity so pure-white studio photos (like off-white/ecru tees!)
+  // use a tight surgical tolerance (16) and NEVER eat into bright off-white cotton fabric!
+  let devSum = 0;
+  for (let x = 0; x < w; x += sampleStep) {
+    for (const y of [2, h - 3]) {
+      const idx = (y * w + x) * 4;
+      devSum += Math.hypot(data[idx] - bgR, data[idx + 1] - bgG, data[idx + 2] - bgB);
+    }
+  }
+  const avgBorderDev = devSum / Math.max(1, count);
+  const isPureStudioBg = avgBorderDev < 4.5 && bgR > 242 && bgG > 242 && bgB > 242;
+
   onProgress?.(60, 'Removing wall & background...');
 
   const visited = new Uint8Array(w * h);
@@ -131,8 +143,8 @@ export async function instantLightBgCutout(imageSrc, onProgress, skipTrim = fals
   let head = 0;
   let tail = 0;
 
-  // Threshold tuned for phone photos on plain/white walls with soft shadows
-  const colorTol = 46;
+  // Tight 16 tolerance for pure studio white (protects white/ecru tees!), 42 for real room walls
+  const colorTol = isPureStudioBg ? 16 : 42;
   const isBgPixel = (idx) => {
     const r = data[idx];
     const g = data[idx + 1];
