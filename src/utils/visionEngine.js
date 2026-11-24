@@ -106,6 +106,11 @@ let personMaskCanvas = null;
 let personMaskCtx = null;
 let personMaskImgData = null;
 
+// Adaptive temporal EMA buffers to eliminate 256x256 border shimmer on shoulders, hair & arms
+let smoothHf = null;
+let smoothBs = null;
+let smoothPm = null;
+
 /**
  * Unpacks MediaPipe Selfie Multiclass categoryMask into 3 reusable alpha canvases:
  * - hairFaceCanvas: `hair` (1) + `face-skin` (3) + `others` (5, e.g. glasses/beard) -> ALWAYS ON TOP!
@@ -151,33 +156,54 @@ export function unpackMulticlassMasks(categoryMask) {
   ));
 
   const catBytes = categoryMask.getAsUint8Array();
+  const len = catBytes.length;
+  if (!smoothHf || smoothHf.length !== len) {
+    smoothHf = new Float32Array(len);
+    smoothBs = new Float32Array(len);
+    smoothPm = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      const cls = catBytes[i];
+      smoothHf[i] = cls === SEG_CLASS.HAIR || cls === SEG_CLASS.FACE_SKIN || cls === SEG_CLASS.OTHERS ? 1 : 0;
+      smoothBs[i] = cls === SEG_CLASS.BODY_SKIN ? 1 : 0;
+      smoothPm[i] = cls !== SEG_CLASS.BACKGROUND ? 1 : 0;
+    }
+  } else {
+    for (let i = 0; i < len; i++) {
+      const cls = catBytes[i];
+      const tHf = cls === SEG_CLASS.HAIR || cls === SEG_CLASS.FACE_SKIN || cls === SEG_CLASS.OTHERS ? 1 : 0;
+      const tBs = cls === SEG_CLASS.BODY_SKIN ? 1 : 0;
+      const tPm = cls !== SEG_CLASS.BACKGROUND ? 1 : 0;
+
+      // Temporal EMA: eliminates border flicker while keeping fast hand/hair movement crisp
+      smoothHf[i] += (tHf - smoothHf[i]) * 0.42;
+      smoothBs[i] += (tBs - smoothBs[i]) * 0.48;
+      smoothPm[i] += (tPm - smoothPm[i]) * 0.30;
+    }
+  }
+
   const hf = hairFaceImgData.data;
   const bs = bodySkinImgData.data;
   const pm = personMaskImgData.data;
 
-  for (let i = 0; i < catBytes.length; i++) {
-    const cls = catBytes[i];
-    const idx = i * 4;
+  const toAlpha = (v) => (v < 0.25 ? 0 : v > 0.72 ? 255 : Math.round(((v - 0.25) / 0.47) * 255));
 
-    const isHairOrFace =
-      cls === SEG_CLASS.HAIR || cls === SEG_CLASS.FACE_SKIN || cls === SEG_CLASS.OTHERS;
-    const isBodySkin = cls === SEG_CLASS.BODY_SKIN;
-    const isPerson = cls !== SEG_CLASS.BACKGROUND;
+  for (let i = 0; i < len; i++) {
+    const idx = i * 4;
 
     hf[idx] = 255;
     hf[idx + 1] = 255;
     hf[idx + 2] = 255;
-    hf[idx + 3] = isHairOrFace ? 255 : 0;
+    hf[idx + 3] = toAlpha(smoothHf[i]);
 
     bs[idx] = 255;
     bs[idx + 1] = 255;
     bs[idx + 2] = 255;
-    bs[idx + 3] = isBodySkin ? 255 : 0;
+    bs[idx + 3] = toAlpha(smoothBs[i]);
 
     pm[idx] = 255;
     pm[idx + 1] = 255;
     pm[idx + 2] = 255;
-    pm[idx + 3] = isPerson ? 255 : 0;
+    pm[idx + 3] = toAlpha(smoothPm[i]);
   }
 
   hairFaceCtx.putImageData(hairFaceImgData, 0, 0);
@@ -237,9 +263,10 @@ export function drawMulticlassForegroundOcclusion(
   fgCtx.drawImage(hairFaceMask, offsetX, offsetY, drawW, drawH);
   fgCtx.restore();
 
-  // 2. Forearms & Hands (`body-skin` restricted to active foreground arm corridors where wrist Z < torso Z)
+  // 2. Neck (inside collar opening) + Forearms & Hands (`body-skin` restricted to active corridors!)
   const activeArms = (armData?.arms || []).filter((a) => a && a.inFront && a.wrist);
-  if (activeArms.length > 0 && bodySkinMask) {
+  const hasNeckAnchor = Boolean(armData?.nose && armData?.neckCenter);
+  if ((activeArms.length > 0 || hasNeckAnchor) && bodySkinMask) {
     const shW = armData.shoulderWidth || 160;
     const forearmR = Math.max(20, shW * 0.20);
     const handR = Math.max(24, shW * 0.24);
@@ -251,6 +278,20 @@ export function drawMulticlassForegroundOcclusion(
     armMaskCtx.lineCap = 'round';
     armMaskCtx.lineJoin = 'round';
 
+    // 2a. Clean neck-skin window right above the collar so real neck emerges naturally from the tee
+    if (hasNeckAnchor) {
+      const { nose, neckCenter, backBlend = 0 } = armData;
+      const neckHalfW = shW * 0.24;
+      const collarDipY = neckCenter.y + shW * (backBlend > 0.5 ? -0.10 : 0.04);
+      armMaskCtx.beginPath();
+      armMaskCtx.moveTo(neckCenter.x - neckHalfW, nose.y);
+      armMaskCtx.lineTo(neckCenter.x + neckHalfW, nose.y);
+      armMaskCtx.lineTo(neckCenter.x + neckHalfW * 0.9, neckCenter.y - shW * 0.14);
+      armMaskCtx.quadraticCurveTo(neckCenter.x, collarDipY, neckCenter.x - neckHalfW * 0.9, neckCenter.y - shW * 0.14);
+      armMaskCtx.closePath();
+      armMaskCtx.fill();
+    }
+
     const seg = (pA, pB, r) => {
       if (!pA || !pB) return;
       armMaskCtx.lineWidth = r * 2;
@@ -261,9 +302,24 @@ export function drawMulticlassForegroundOcclusion(
     };
 
     for (const arm of activeArms) {
-      const { elbow, wrist, index, pinky, thumb } = arm;
-      if (elbow && elbow.v > 0.2) {
+      const { shoulder, elbow, wrist, index, pinky, thumb, isSideNearArm, elbowInFront } = arm;
+      if (isSideNearArm && shoulder && elbow) {
+        // Side view: near arm emerges cleanly below the T-shirt sleeve hem
+        const sleeveExit = {
+          x: shoulder.x * 0.46 + elbow.x * 0.54,
+          y: shoulder.y * 0.46 + elbow.y * 0.54,
+        };
+        seg(sleeveExit, elbow, forearmR * 1.05);
         seg(elbow, wrist, forearmR);
+      } else if (elbow && elbow.v > 0.2) {
+        const startPt = elbowInFront
+          ? elbow
+          : { x: elbow.x * 0.85 + wrist.x * 0.15, y: elbow.y * 0.85 + wrist.y * 0.15 };
+        seg(startPt, wrist, forearmR);
+        if (elbowInFront && shoulder) {
+          const midUpper = { x: shoulder.x * 0.38 + elbow.x * 0.62, y: shoulder.y * 0.38 + elbow.y * 0.62 };
+          seg(midUpper, elbow, forearmR);
+        }
       } else {
         seg({ x: wrist.x, y: wrist.y + shW * 0.6 }, wrist, forearmR);
       }

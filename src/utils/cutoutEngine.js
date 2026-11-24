@@ -7,6 +7,7 @@
  */
 
 import { detectPoseInImage } from './poseEngine';
+import { extractGarmentWithSegFormer } from './garmentExtractor';
 
 function loadImage(src) {
   return new Promise((resolve, reject) => {
@@ -796,26 +797,74 @@ async function extractShirtFromModelCutout(rawCutoutUrl, landmarks) {
 }
 
 /**
- * High-quality local AI background removal using @imgly/background-removal.
- * Automatically detects online-store model shoots and extracts ONLY the T-shirt!
+ * Auto-levels a SegFormer-extracted T-shirt cutout if the e-commerce model had tilted shoulders,
+ * so the collar and chest graphic sit perfectly straight (0°) during live try-on.
+ */
+async function autoLevelCutoutWithPose(textureUrl, landmarks) {
+  if (!landmarks || !landmarks[11] || !landmarks[12]) return textureUrl;
+  const leftSh = landmarks[11].x < landmarks[12].x ? landmarks[11] : landmarks[12];
+  const rightSh = landmarks[11].x < landmarks[12].x ? landmarks[12] : landmarks[11];
+  const tilt = Math.atan2(rightSh.y - leftSh.y, rightSh.x - leftSh.x);
+  if (Math.abs(tilt) < 0.025 || Math.abs(tilt) > 0.35) return textureUrl;
+
+  const img = await loadImage(textureUrl);
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.translate(c.width * 0.5, c.height * 0.25);
+  ctx.rotate(-tilt);
+  ctx.translate(-c.width * 0.5, -c.height * 0.25);
+  ctx.drawImage(img, 0, 0);
+  return trimTransparentBounds(c.toDataURL('image/png'));
+}
+
+/**
+ * High-quality local AI garment extraction:
+ * 1. Primary (AI mode): SegFormer-B2-Clothes 18-class neural fashion parser (WebGPU -> WASM SIMD)
+ *    which cleanly isolates ONLY `upper-clothes` from ANY e-commerce model shoot or busy background!
+ * 2. Automatic fallback: @imgly/background-removal + MediaPipe Pose surgical model extractor.
  */
 export async function processGarmentImage(imageSrc, mode = 'ai', onProgress) {
-  // Check if the uploaded image is an online-store model shoot (runs in parallel/fast locally)
+  // Detect pose landmarks on the uploaded photo (identifies model shoots & shoulder tilt)
   let modelLandmarks = null;
   try {
     const origImg = await loadImage(imageSrc);
     const lm = await detectPoseInImage(origImg);
     if (lm) {
-      const shVis = (lm[11]?.visibility ?? 0) > 0.52 && (lm[12]?.visibility ?? 0) > 0.52;
+      const shVis = (lm[11]?.visibility ?? 0) > 0.50 && (lm[12]?.visibility ?? 0) > 0.50;
       const headOrHipVis =
-        (lm[0]?.visibility ?? 0) > 0.45 ||
-        ((lm[23]?.visibility ?? 0) > 0.45 && (lm[24]?.visibility ?? 0) > 0.45);
+        (lm[0]?.visibility ?? 0) > 0.42 ||
+        ((lm[23]?.visibility ?? 0) > 0.42 && (lm[24]?.visibility ?? 0) > 0.42);
       if (shVis && headOrHipVis) {
         modelLandmarks = lm;
       }
     }
   } catch {
-    // Proceed as standard flat-lay garment
+    // Proceed as standard garment
+  }
+
+  // PRIMARY ENGINE: SegFormer-B2-Clothes Neural Fashion Parser (excels on e-commerce model photos!)
+  if (mode === 'ai') {
+    try {
+      onProgress?.(12, modelLandmarks ? 'Model shoot detected — running SegFormer-B2 AI...' : 'Running SegFormer-B2 garment parser...');
+      const segResult = await extractGarmentWithSegFormer(imageSrc, (pct, msg) => {
+        onProgress?.(Math.min(92, Math.round(pct * 0.92)), msg);
+      });
+
+      if (segResult?.textureUrl) {
+        onProgress?.(95, 'Auto-leveling shoulders & finalizing cutout...');
+        const leveled = modelLandmarks
+          ? await autoLevelCutoutWithPose(segResult.textureUrl, modelLandmarks)
+          : segResult.textureUrl;
+        onProgress?.(100, `Extracted via SegFormer-B2 (${segResult.provider?.toUpperCase() || 'AI'})`);
+        return leveled;
+      }
+    } catch (segErr) {
+      console.warn('SegFormer-B2 parser fallback to background-removal:', segErr);
+    }
   }
 
   let rawCutout = null;
