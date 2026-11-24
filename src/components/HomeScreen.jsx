@@ -46,10 +46,11 @@ export default function HomeScreen({
       {/* Top Studio Bar */}
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-[#26262A] px-8">
         <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#CCFF00] text-[#0B0B0C] font-display font-bold text-lg">
-            F
-          </div>
-          <span className="font-display text-xl font-bold tracking-tight">FitDrop</span>
+          <img
+            src="/logo.png"
+            alt="FitDrop"
+            className="h-8 w-auto object-contain select-none"
+          />
           <span className="ml-2 rounded-md border border-[#26262A] bg-[#161618] px-2 py-0.5 font-mono-hud text-[10px] uppercase tracking-wider text-[#8E8E93]">
             STUDIO v1.0
           </span>
